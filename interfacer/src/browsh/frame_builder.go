@@ -31,12 +31,15 @@ type frame struct {
 	// and we need to start from scratch again. It's just too unpredictable how data for a DOM
 	// of a different size and shape will interact with data from another DOM.
 	isDOMSizeChanged bool
-	// Raw data used to build a single, usable frame
-	pixels      map[int][2]tcell.Color
-	text        map[int][]rune
-	textColours map[int]tcell.Color
-	// The actual built frame, can be used to render cells to the TTY
-	cells *threadSafeCellsMap
+	// Raw data used to build a single, usable frame. Flat slices indexed by
+	// (row * totalWidth) + col for O(1) access and cache-friendly iteration.
+	pixels      [][2]tcell.Color
+	pixelsValid []bool
+	text        [][]rune
+	textColours []tcell.Color
+	textValid   []bool
+	// The actual built frame using double-buffered lock-free cell storage
+	cells *doubleBufferedCells
 	// Input boxes, like for entering passwords, sending emails etc
 	inputBoxes map[string]*inputBox
 }
@@ -110,7 +113,7 @@ func parseJSONFramePixels(jsonString string) {
 		slog.Warn("Not building frame for non-existent tab ID", "TabID", incoming.Meta.TabID)
 		return
 	}
-	if len(Tabs[incoming.Meta.TabID].frame.text) == 0 {
+	if Tabs[incoming.Meta.TabID].frame.text == nil {
 		return
 	}
 	Tabs[incoming.Meta.TabID].frame.buildFramePixels(incoming)
@@ -126,22 +129,27 @@ func (f *frame) buildFramePixels(incoming incomingFramePixels) {
 
 func (f *frame) setup(meta jsonFrameBase) {
 	f.isDOMSizeChanged = meta.TotalWidth != f.totalWidth || meta.TotalHeight != f.totalHeight
-	if f.isDOMSizeChanged || f.cells == nil {
-		f.resetCells()
-	}
-	if f.inputBoxes == nil {
-		f.inputBoxes = make(map[string]*inputBox)
-	}
+	// Update dimensions before resetCells so size calculation is correct
 	f.subWidth = meta.SubWidth
 	f.subHeight = meta.SubHeight
 	f.totalWidth = meta.TotalWidth
 	f.totalHeight = meta.TotalHeight
 	f.subLeft = meta.SubLeft
 	f.subTop = meta.SubTop
+	if f.isDOMSizeChanged || f.cells == nil {
+		f.resetCells()
+	}
+	if f.inputBoxes == nil {
+		f.inputBoxes = make(map[string]*inputBox)
+	}
 }
 
 func (f *frame) resetCells() {
-	f.cells = newCellsMap()
+	size := f.domRowCount() * f.totalWidth
+	if size <= 0 {
+		size = 1
+	}
+	f.cells = newDoubleBufferedCells(size)
 }
 
 func (f *frame) isIncomingFrameTextValid(incoming incomingFrameText) bool {
@@ -178,13 +186,20 @@ func (f *frame) updateInputBoxes(incoming incomingFrameText) {
 
 func (f *frame) populateFrameText(incoming incomingFrameText) {
 	var cellIndex, frameIndex, colourIndex int
+	sliceSize := f.domRowCount() * f.totalWidth
 	if f.isDOMSizeChanged || f.text == nil {
-		f.text = make(map[int][]rune, (f.domRowCount())*f.totalWidth)
-		f.textColours = make(map[int]tcell.Color, (f.domRowCount())*f.totalWidth)
+		f.text = make([][]rune, sliceSize)
+		f.textColours = make([]tcell.Color, sliceSize)
+		f.textValid = make([]bool, sliceSize)
 	}
+	// Copy front buffer to back so incremental sub-frames preserve existing cells
+	f.cells.copyFrontToBack()
 	for y := 0; y < f.subRowCount(); y++ {
 		for x := 0; x < f.subWidth; x++ {
 			cellIndex = f.getCellIndexFromSubCoords(x, y*2)
+			if cellIndex < 0 || cellIndex >= sliceSize {
+				continue
+			}
 			frameIndex = (y * f.subWidth) + x
 			colourIndex = frameIndex * 3
 			f.textColours[cellIndex] = tcell.NewRGBColor(
@@ -193,20 +208,29 @@ func (f *frame) populateFrameText(incoming incomingFrameText) {
 				incoming.Colours[colourIndex+2],
 			)
 			f.text[cellIndex] = []rune(incoming.Text[frameIndex])
+			f.textValid[cellIndex] = true
 			f.buildCell(f.subLeft+x, (f.subTop/2)+y)
 		}
 	}
+	f.cells.swap()
 }
 
 func (f *frame) populateFramePixels(incoming incomingFramePixels) {
 	var cellIndex, frameIndexFg, frameIndexBg, pixelIndexFg, pixelIndexBg int
+	sliceSize := f.domRowCount() * f.totalWidth
 	if f.isDOMSizeChanged || f.pixels == nil {
-		f.pixels = make(map[int][2]tcell.Color, f.totalHeight*f.totalWidth)
+		f.pixels = make([][2]tcell.Color, sliceSize)
+		f.pixelsValid = make([]bool, sliceSize)
 	}
 	data := incoming.Colours
+	// Copy front buffer to back so incremental sub-frames preserve existing cells
+	f.cells.copyFrontToBack()
 	for y := 0; y < f.subHeight; y += 2 {
 		for x := 0; x < f.subWidth; x++ {
 			cellIndex = f.getCellIndexFromSubCoords(x, y)
+			if cellIndex < 0 || cellIndex >= sliceSize {
+				continue
+			}
 			frameIndexBg = (y * f.subWidth) + x
 			frameIndexFg = ((y + 1) * f.subWidth) + x
 			pixelIndexBg = frameIndexBg * 3
@@ -224,9 +248,11 @@ func (f *frame) populateFramePixels(incoming incomingFramePixels) {
 				),
 			}
 			f.pixels[cellIndex] = pixels
+			f.pixelsValid[cellIndex] = true
 			f.buildCell(f.subLeft+x, (f.subTop+y)/2)
 		}
 	}
+	f.cells.swap()
 }
 
 func (f *frame) isIncomingFramePixelsValid(incoming incomingFramePixels) bool {
@@ -254,28 +280,18 @@ func (f *frame) buildCell(x int, y int) {
 }
 
 func (f *frame) getCharacterAt(index int) ([]rune, tcell.Color) {
-	var colour tcell.Color
-	var character []rune
-	if result, ok := f.text[index]; ok {
-		character = result
-		colour = f.textColours[index]
-	} else {
-		character = []rune(" ")
-		colour = tcell.ColorBlack
+	if index >= 0 && index < len(f.textValid) && f.textValid[index] {
+		return f.text[index], f.textColours[index]
 	}
-	return character, colour
+	return []rune(" "), tcell.ColorBlack
 }
 
 func (f *frame) getPixelColoursAt(index int) (tcell.Color, tcell.Color) {
-	var fgColour, bgColour tcell.Color
-	if result, ok := f.pixels[index]; ok {
-		bgColour = result[0]
-		fgColour = result[1]
-	} else {
-		x := index % f.subWidth
-		fgColour, bgColour = getHatchedCellColours(x)
+	if index >= 0 && index < len(f.pixelsValid) && f.pixelsValid[index] {
+		return f.pixels[index][1], f.pixels[index][0]
 	}
-	return fgColour, bgColour
+	x := index % f.totalWidth
+	return getHatchedCellColours(x)
 }
 
 func isCharacterTransparent(character []rune) bool {
