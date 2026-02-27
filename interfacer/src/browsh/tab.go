@@ -3,19 +3,24 @@ package browsh
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 )
 
-// Tabs is a map of all tab data
+// tabsMu protects Tabs, CurrentTab, tabsOrder, and tabsDeleted from concurrent access.
+// The WebSocket reader goroutine writes tab state while the TTY stdin goroutine reads it.
+var tabsMu sync.RWMutex
+
+// Tabs is a map of all tab data. Protected by tabsMu.
 var Tabs = make(map[int]*tab)
 
-// CurrentTab is the currently active tab in the TTY browser
+// CurrentTab is the currently active tab in the TTY browser. Protected by tabsMu.
 var CurrentTab *tab
 
-// Slice of the order in which tabs appear in the tab bar
+// Slice of the order in which tabs appear in the tab bar. Protected by tabsMu.
 var tabsOrder []int
 
 // There can be a race condition between the webext sending a tab state update and the
-// the tab being deleted, so we need to keep track of all deleted IDs
+// the tab being deleted, so we need to keep track of all deleted IDs. Protected by tabsMu.
 var tabsDeleted []int
 
 // A single tab synced from the browser
@@ -30,27 +35,39 @@ type tab struct {
 }
 
 func ResetTabs() {
+	tabsMu.Lock()
+	defer tabsMu.Unlock()
 	Tabs = make(map[int]*tab)
 	CurrentTab = nil
 	tabsOrder = nil
 	tabsDeleted = nil
 }
 
+// ensureTabExists must be called with tabsMu held for writing.
 func ensureTabExists(id int) {
 	if _, ok := Tabs[id]; !ok {
-		newTab(id)
-		if isNewEmptyTabActive() {
-			removeTab(-1)
+		newTabLocked(id)
+		if isNewEmptyTabActiveLocked() {
+			removeTabLocked(-1)
 		}
 	}
 }
 
-func isTabPresent(id int) bool {
+// IsTabPresent checks if a tab exists. Safe for concurrent use.
+func IsTabPresent(id int) bool {
+	tabsMu.RLock()
+	defer tabsMu.RUnlock()
+	return isTabPresentLocked(id)
+}
+
+// isTabPresentLocked must be called with tabsMu held.
+func isTabPresentLocked(id int) bool {
 	_, ok := Tabs[id]
 	return ok
 }
 
-func newTab(id int) {
+// newTabLocked must be called with tabsMu held for writing.
+func newTabLocked(id int) {
 	tabsOrder = append(tabsOrder, id)
 	Tabs[id] = &tab{
 		ID: id,
@@ -62,12 +79,19 @@ func newTab(id int) {
 }
 
 func removeTab(id int) {
+	tabsMu.Lock()
+	defer tabsMu.Unlock()
+	removeTabLocked(id)
+}
+
+// removeTabLocked must be called with tabsMu held for writing.
+func removeTabLocked(id int) {
 	if len(Tabs) == 1 {
 		quitBrowsh()
 	}
 	tabsDeleted = append(tabsDeleted, id)
 	sendMessageToWebExtension(fmt.Sprintf("/remove_tab,%d", id))
-	nextTab()
+	nextTabLocked()
 	removeTabIDfromTabsOrder(id)
 	delete(Tabs, id)
 	renderUI()
@@ -89,26 +113,35 @@ func removeTabIDfromTabsOrder(id int) {
 // tab then we can't talk to it to tell it navigate. So we need to only create a real new
 // tab when we actually have a URL.
 func createNewEmptyTab() {
-	if isNewEmptyTabActive() {
+	tabsMu.Lock()
+	defer tabsMu.Unlock()
+	if isNewEmptyTabActiveLocked() {
 		return
 	}
-	newTab(-1)
-	tab := Tabs[-1]
-	tab.Title = "New Tab"
-	tab.URI = ""
-	tab.Active = true
-	CurrentTab = tab
+	newTabLocked(-1)
+	t := Tabs[-1]
+	t.Title = "New Tab"
+	t.URI = ""
+	t.Active = true
+	CurrentTab = t
 	CurrentTab.frame.resetCells()
 	renderUI()
 	urlBarFocus(true)
 	renderCurrentTabWindow()
 }
 
-func isNewEmptyTabActive() bool {
-	return isTabPresent(-1)
+func isNewEmptyTabActiveLocked() bool {
+	return isTabPresentLocked(-1)
 }
 
 func nextTab() {
+	tabsMu.Lock()
+	defer tabsMu.Unlock()
+	nextTabLocked()
+}
+
+// nextTabLocked must be called with tabsMu held for writing.
+func nextTabLocked() {
 	for i := 0; i < len(tabsOrder); i++ {
 		if tabsOrder[i] == CurrentTab.ID {
 			if i+1 == len(tabsOrder) {
@@ -140,11 +173,13 @@ func parseJSONTabState(jsonString string) {
 	if err := json.Unmarshal(jsonBytes, &incoming); err != nil {
 		Shutdown(err)
 	}
+	tabsMu.Lock()
+	defer tabsMu.Unlock()
 	if isTabPreviouslyDeleted(incoming.ID) {
 		return
 	}
 	ensureTabExists(incoming.ID)
-	if incoming.Active && !isNewEmptyTabActive() {
+	if incoming.Active && !isNewEmptyTabActiveLocked() {
 		CurrentTab = Tabs[incoming.ID]
 	}
 	Tabs[incoming.ID].handleStateChange(&incoming)

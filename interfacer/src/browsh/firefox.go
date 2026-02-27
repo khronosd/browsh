@@ -230,7 +230,7 @@ func firefoxMarionette() {
 		Shutdown(errors.New("Failed to connect to Firefox's Marionette within 30 seconds"))
 	}
 	marionette = conn
-	go readMarionette()
+	go readMarionetteLoop()
 	sendFirefoxCommand("WebDriver:NewSession", map[string]interface{}{})
 }
 
@@ -262,16 +262,19 @@ func setFFPreference(key string, value string) {
 	sendFirefoxCommand("Marionette:SetContext", map[string]interface{}{"value": "content"})
 }
 
-// Consume output from Marionette, we don't do anything with it. It"s just
-// useful to have it in the logs.
-func readMarionette() {
+// readMarionetteLoop is a single persistent goroutine that reads all output
+// from the Marionette connection. It replaces the previous pattern of spawning
+// a new goroutine per command, which could leak goroutines if reads blocked.
+func readMarionetteLoop() {
 	buffer := make([]byte, 4096)
-	count, err := marionette.Read(buffer)
-	if err != nil {
-		slog.Error("Error reading from Marionette connection", "error", err)
-		return
+	for {
+		count, err := marionette.Read(buffer)
+		if err != nil {
+			slog.Error("Marionette reader exiting", "error", err)
+			return
+		}
+		slog.Info("FF-MRNT", "buffer", string(buffer[:count]))
 	}
-	slog.Info("FF-MRNT", "buffer", string(buffer[:count]))
 }
 
 func sendFirefoxCommand(command string, args map[string]interface{}) {
@@ -281,7 +284,6 @@ func sendFirefoxCommand(command string, args map[string]interface{}) {
 	message := fmt.Sprintf("%d:%s", len(marshalled), marshalled)
 	fmt.Fprintf(marionette, "%s", message)
 	ffCommandCount++
-	go readMarionette()
 }
 
 func setDefaultFirefoxPreferences() {

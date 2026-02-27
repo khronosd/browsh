@@ -15,10 +15,10 @@ import (
 var (
 	upgrader = websocket.Upgrader{
 		CheckOrigin:     func(r *http.Request) bool { return true },
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+		ReadBufferSize:  128 * 1024,
+		WriteBufferSize: 128 * 1024,
 	}
-	stdinChannel              = make(chan string)
+	stdinChannel              = make(chan string, 32)
 	IsConnectedToWebExtension = false
 )
 
@@ -51,7 +51,6 @@ func webSocketReader(ws *websocket.Conn) {
 	defer ws.Close()
 	for {
 		_, message, err := ws.ReadMessage()
-		handleWebextensionCommand(message)
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseGoingAway) {
 				slog.Info("Socket reader detected that the browser closed the websocket")
@@ -65,6 +64,7 @@ func webSocketReader(ws *websocket.Conn) {
 			}
 			Shutdown(err)
 		}
+		handleWebextensionCommand(message)
 	}
 }
 
@@ -78,13 +78,15 @@ func handleWebextensionCommand(message []byte) {
 	switch command {
 	case "/frame_text":
 		parseJSONFrameText(strings.Join(parts[1:], ","))
-		renderCurrentTabWindow()
 	case "/frame_pixels":
 		parseJSONFramePixels(strings.Join(parts[1:], ","))
 		renderCurrentTabWindow()
 	case "/tab_state":
 		parseJSONTabState(strings.Join(parts[1:], ","))
-		if CurrentTab != nil {
+		tabsMu.RLock()
+		ct := CurrentTab
+		tabsMu.RUnlock()
+		if ct != nil {
 			renderUI()
 		}
 	case "/screenshot":

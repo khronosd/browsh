@@ -78,7 +78,9 @@ func parseJSONFrameText(jsonString string) {
 	if err := json.Unmarshal(jsonBytes, &incoming); err != nil {
 		Shutdown(err)
 	}
-	if !isTabPresent(incoming.Meta.TabID) {
+	tabsMu.RLock()
+	defer tabsMu.RUnlock()
+	if !isTabPresentLocked(incoming.Meta.TabID) {
 		slog.Info(
 			fmt.Sprintf("Not building frame for non-existent tab ID: %d", incoming.Meta.TabID),
 		)
@@ -102,7 +104,9 @@ func parseJSONFramePixels(jsonString string) {
 	if err := json.Unmarshal(jsonBytes, &incoming); err != nil {
 		Shutdown(err)
 	}
-	if !isTabPresent(incoming.Meta.TabID) {
+	tabsMu.RLock()
+	defer tabsMu.RUnlock()
+	if !isTabPresentLocked(incoming.Meta.TabID) {
 		slog.Warn("Not building frame for non-existent tab ID", "TabID", incoming.Meta.TabID)
 		return
 	}

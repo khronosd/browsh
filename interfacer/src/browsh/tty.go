@@ -54,7 +54,10 @@ func readStdin() {
 }
 
 func handleUserKeyPress(ev *tcell.EventKey) {
-	if CurrentTab == nil {
+	tabsMu.RLock()
+	ct := CurrentTab
+	tabsMu.RUnlock()
+	if ct == nil {
 		if ev.Key() == tcell.KeyCtrlQ {
 			quitBrowsh()
 		}
@@ -68,11 +71,18 @@ func handleUserKeyPress(ev *tcell.EventKey) {
 	case tcell.KeyCtrlT:
 		createNewEmptyTab()
 	case tcell.KeyCtrlU:
-		if !isNewEmptyTabActive() {
-			sendMessageToWebExtension("/new_tab,view-source:" + CurrentTab.URI)
+		tabsMu.RLock()
+		isNewEmpty := isTabPresentLocked(-1)
+		uri := CurrentTab.URI
+		tabsMu.RUnlock()
+		if !isNewEmpty {
+			sendMessageToWebExtension("/new_tab,view-source:" + uri)
 		}
 	case tcell.KeyCtrlW:
-		removeTab(CurrentTab.ID)
+		tabsMu.RLock()
+		id := CurrentTab.ID
+		tabsMu.RUnlock()
+		removeTab(id)
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if activeInputBox == nil {
 			sendMessageToWebExtension("/tab_command,/history_back")
@@ -146,45 +156,54 @@ func isMultiLineEnter(ev *tcell.EventKey) bool {
 }
 
 func handleScrolling(ev *tcell.EventKey) {
-	yScrollOriginal := CurrentTab.frame.yScroll
+	tabsMu.RLock()
+	ct := CurrentTab
+	tabsMu.RUnlock()
+	if ct == nil {
+		return
+	}
+	yScrollOriginal := ct.frame.yScroll
 	_, height := screen.Size()
 	height -= uiHeight
 	if ev.Key() == tcell.KeyUp {
-		CurrentTab.frame.yScroll -= 2
+		ct.frame.yScroll -= 2
 	}
 	if ev.Key() == tcell.KeyDown {
-		CurrentTab.frame.yScroll += 2
+		ct.frame.yScroll += 2
 	}
 	if ev.Key() == tcell.KeyPgUp {
-		CurrentTab.frame.yScroll -= height
+		ct.frame.yScroll -= height
 	}
 	if ev.Key() == tcell.KeyPgDn {
-		CurrentTab.frame.yScroll += height
+		ct.frame.yScroll += height
 	}
-	CurrentTab.frame.limitScroll(height)
+	ct.frame.limitScroll(height)
 	sendMessageToWebExtension(
 		fmt.Sprintf(
 			"/tab_command,/scroll_status,%d,%d",
-			CurrentTab.frame.xScroll,
-			CurrentTab.frame.yScroll*2))
-	if CurrentTab.frame.yScroll != yScrollOriginal {
+			ct.frame.xScroll,
+			ct.frame.yScroll*2))
+	if ct.frame.yScroll != yScrollOriginal {
 		renderCurrentTabWindow()
 	}
 }
 
 func handleMouseEvent(ev *tcell.EventMouse) {
-	if CurrentTab == nil {
+	tabsMu.RLock()
+	ct := CurrentTab
+	tabsMu.RUnlock()
+	if ct == nil {
 		return
 	}
 	x, y := ev.Position()
-	xInFrame := x + CurrentTab.frame.xScroll
-	yInFrame := y - uiHeight + CurrentTab.frame.yScroll
+	xInFrame := x + ct.frame.xScroll
+	yInFrame := y - uiHeight + ct.frame.yScroll
 	button := ev.Buttons()
 	if button == tcell.WheelUp || button == tcell.WheelDown {
 		handleMouseScroll(button)
 	}
 	if button == 1 {
-		CurrentTab.frame.maybeFocusInputBox(xInFrame, yInFrame)
+		ct.frame.maybeFocusInputBox(xInFrame, yInFrame)
 	}
 	eventMap := map[string]interface{}{
 		"button":    int(button),
@@ -197,21 +216,27 @@ func handleMouseEvent(ev *tcell.EventMouse) {
 }
 
 func handleMouseScroll(scrollType tcell.ButtonMask) {
-	yScrollOriginal := CurrentTab.frame.yScroll
+	tabsMu.RLock()
+	ct := CurrentTab
+	tabsMu.RUnlock()
+	if ct == nil {
+		return
+	}
+	yScrollOriginal := ct.frame.yScroll
 	_, height := screen.Size()
 	height -= uiHeight
 	if scrollType == tcell.WheelUp {
-		CurrentTab.frame.yScroll -= 1
+		ct.frame.yScroll -= 1
 	} else if scrollType == tcell.WheelDown {
-		CurrentTab.frame.yScroll += 1
+		ct.frame.yScroll += 1
 	}
-	CurrentTab.frame.limitScroll(height)
+	ct.frame.limitScroll(height)
 	sendMessageToWebExtension(
 		fmt.Sprintf(
 			"/tab_command,/scroll_status,%d,%d",
-			CurrentTab.frame.xScroll,
-			CurrentTab.frame.yScroll*2))
-	if CurrentTab.frame.yScroll != yScrollOriginal {
+			ct.frame.xScroll,
+			ct.frame.yScroll*2))
+	if ct.frame.yScroll != yScrollOriginal {
 		renderCurrentTabWindow()
 	}
 }
@@ -232,13 +257,16 @@ func renderCurrentTabWindow() {
 	styling := tcell.StyleDefault
 	var runeChars []rune
 	width, height := screen.Size()
-	if CurrentTab == nil || CurrentTab.frame.cells == nil {
+	tabsMu.RLock()
+	ct := CurrentTab
+	tabsMu.RUnlock()
+	if ct == nil || ct.frame.cells == nil {
 		return
 	}
-	CurrentTab.frame.overlayInputBoxContent()
+	ct.frame.overlayInputBoxContent()
 	for y := 0; y < height-uiHeight; y++ {
 		for x := 0; x < width; x++ {
-			currentCell = getCell(x, y)
+			currentCell = getCellFromFrame(&ct.frame, x, y)
 			runeChars = currentCell.character
 			// TODO: do this is in isCharacterTransparent()
 			if len(runeChars) == 0 {
@@ -265,12 +293,11 @@ func renderCurrentTabWindow() {
 	screen.Show()
 }
 
-func getCell(x, y int) cell {
+func getCellFromFrame(f *frame, x, y int) cell {
 	var currentCell cell
 	var ok bool
-	frame := &CurrentTab.frame
-	index := ((y + frame.yScroll) * frame.totalWidth) + (x + frame.xScroll)
-	if currentCell, ok = frame.cells.load(index); !ok {
+	index := ((y + f.yScroll) * f.totalWidth) + (x + f.xScroll)
+	if currentCell, ok = f.cells.load(index); !ok {
 		fgColour, bgColour := getHatchedCellColours(x)
 		currentCell = cell{
 			fgColour:  fgColour,

@@ -111,9 +111,15 @@ func (i *inputBox) addCharacterToFrame(x int, y int, c rune) {
 		cellFGColour, cellBGColour tcell.Color
 		ok                         bool
 	)
+	tabsMu.RLock()
+	ct := CurrentTab
+	tabsMu.RUnlock()
+	if ct == nil {
+		return
+	}
 	cellFGColour = tcell.NewRGBColor(i.FgColour[0], i.FgColour[1], i.FgColour[2])
-	index = (y * CurrentTab.frame.totalWidth) + x
-	if existingCell, ok = CurrentTab.frame.cells.load(index); ok {
+	index = (y * ct.frame.totalWidth) + x
+	if existingCell, ok = ct.frame.cells.load(index); ok {
 		cellBGColour = existingCell.bgColour
 	} else {
 		return
@@ -123,7 +129,7 @@ func (i *inputBox) addCharacterToFrame(x int, y int, c rune) {
 		fgColour:  cellFGColour,
 		bgColour:  cellBGColour,
 	}
-	CurrentTab.frame.cells.store(index, inputBoxCell)
+	ct.frame.cells.store(index, inputBoxCell)
 }
 
 // Different methods are used for containing and displaying overflowed text depending on the
@@ -176,7 +182,7 @@ func (i *inputBox) sendInputBoxToBrowser() {
 
 func (i *inputBox) handleEnterKey(modifier tcell.ModMask) {
 	if urlInputBox.isActive {
-		if isNewEmptyTabActive() {
+		if IsTabPresent(-1) {
 			sendMessageToWebExtension("/new_tab," + string(i.text))
 		} else {
 			sendMessageToWebExtension("/url_bar," + string(i.text))

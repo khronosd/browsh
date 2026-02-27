@@ -42,8 +42,14 @@ func (i *inputBox) getCoordsOfCursor() (int, int) {
 }
 
 func (i *inputBox) getCoordsOfIndex(index int) (int, int) {
-	xFrameOffset := CurrentTab.frame.xScroll
-	yFrameOffset := CurrentTab.frame.yScroll - uiHeight
+	var xFrameOffset, yFrameOffset int
+	tabsMu.RLock()
+	ct := CurrentTab
+	tabsMu.RUnlock()
+	if ct != nil {
+		xFrameOffset = ct.frame.xScroll
+		yFrameOffset = ct.frame.yScroll - uiHeight
+	}
 	if urlInputBox.isActive {
 		xFrameOffset = 0
 		yFrameOffset = 0

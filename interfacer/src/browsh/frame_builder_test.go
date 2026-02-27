@@ -35,7 +35,9 @@ func debugCells() {
 
 var _ = Describe("Frame struct", func() {
 	BeforeEach(func() {
-		newTab(1)
+		tabsMu.Lock()
+		newTabLocked(1)
+		tabsMu.Unlock()
 	})
 
 	Describe("No Offset", func() {

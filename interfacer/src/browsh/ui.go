@@ -50,17 +50,34 @@ func fillLineToEnd(x, y int) {
 }
 
 func renderTabs() {
-	var tab *tab
+	var t *tab
 	var style tcell.Style
 	count := 0
 	xPosition := 0
 	tabTitleLength := 20
-	for _, tabID := range tabsOrder {
-		tab = Tabs[tabID]
-		tabTitle := []rune(tab.Title)
+	tabsMu.RLock()
+	localOrder := make([]int, len(tabsOrder))
+	copy(localOrder, tabsOrder)
+	currentID := -1
+	if CurrentTab != nil {
+		currentID = CurrentTab.ID
+	}
+	tabsMu.RUnlock()
+	for _, tabID := range localOrder {
+		tabsMu.RLock()
+		t = Tabs[tabID]
+		tabsMu.RUnlock()
+		if t == nil {
+			continue
+		}
+		tabTitle := []rune(t.Title)
+		if len(tabTitle) < tabTitleLength {
+			tabTitleLength = len(tabTitle)
+		}
 		tabTitleContent := string(tabTitle[0:tabTitleLength])
+		tabTitleLength = 20
 		style = tcell.StyleDefault
-		if CurrentTab.ID == tabID {
+		if currentID == tabID {
 			style = tcell.StyleDefault.Reverse(true)
 		}
 		writeString(xPosition, 0, tabTitleContent, style)
@@ -79,7 +96,13 @@ func renderURLBar() {
 		content = append(urlInputBox.text, ' ')
 		urlInputBox.renderURLBox()
 	} else {
-		content = []rune(CurrentTab.URI)
+		tabsMu.RLock()
+		ct := CurrentTab
+		tabsMu.RUnlock()
+		if ct == nil {
+			return
+		}
+		content = []rune(ct.URI)
 		writeString(0, 1, string(content), tcell.StyleDefault)
 	}
 	fillLineToEnd(len(content), 1)
@@ -102,7 +125,12 @@ func urlBarFocus(on bool) {
 		activeInputBox = &urlInputBox
 		urlInputBox.isActive = true
 		urlInputBox.xScroll = 0
-		urlInputBox.text = []rune(CurrentTab.URI)
+		tabsMu.RLock()
+		ct := CurrentTab
+		tabsMu.RUnlock()
+		if ct != nil {
+			urlInputBox.text = []rune(ct.URI)
+		}
 		urlInputBox.putCursorAtEnd()
 		urlInputBox.selectAll()
 	}
@@ -110,7 +138,13 @@ func urlBarFocus(on bool) {
 
 func overlayPageStatusMessage() {
 	_, height := screen.Size()
-	writeString(0, height-1, CurrentTab.StatusMessage, tcell.StyleDefault)
+	tabsMu.RLock()
+	ct := CurrentTab
+	tabsMu.RUnlock()
+	if ct == nil {
+		return
+	}
+	writeString(0, height-1, ct.StatusMessage, tcell.StyleDefault)
 }
 
 func overlayCallToSupport() {
