@@ -14,9 +14,10 @@ import (
 
 // Binary frame message types
 const (
-	msgTypePixels   byte = 0x01
-	msgTypeText     byte = 0x02
-	binaryHeaderLen      = 15
+	msgTypePixels     byte = 0x01
+	msgTypeText       byte = 0x02
+	msgTypePixelDiff  byte = 0x03
+	binaryHeaderLen        = 15
 )
 
 var (
@@ -90,6 +91,9 @@ func handleBinaryFrame(data []byte) {
 		renderCurrentTabWindow()
 	case msgTypeText:
 		parseBinaryFrameText(data)
+	case msgTypePixelDiff:
+		applyBinaryPixelDiff(data)
+		renderCurrentTabWindow()
 	default:
 		slog.Warn("Unknown binary frame type", "type", data[0])
 	}
