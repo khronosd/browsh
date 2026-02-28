@@ -269,7 +269,6 @@ func parseBinaryFrameText(data []byte) {
 			start = i + 1
 		}
 	}
-
 	f.cells.copyFrontToBack()
 	for y := 0; y < f.subRowCount(); y++ {
 		for x := 0; x < f.subWidth; x++ {
