@@ -191,6 +191,8 @@ export default class extends utils.mixins(CommonMixin, TTYCommandsMixin) {
     );
     let tab = this.tabs[parseInt(channel.name)];
     tab.postConnectionInit(channel, this.config);
+    // Wire up backpressure callback so tab can signal frame completion
+    tab._onFrameComplete = () => this.frameCompleted();
     if (!this._is_connected_to_browser_dom) {
       this._startFrameRequestLoop();
     }
@@ -247,6 +249,7 @@ export default class extends utils.mixins(CommonMixin, TTYCommandsMixin) {
   // graphics pixles are sent. Larger frames are sent in response to scroll events and
   // TTY-sized text frames are sent in response to DOM mutation events.
   _startFrameRequestLoop() {
+    this._frame_in_flight = false;
     this.log(
       "BACKGROUND: Frame loop starting at " +
         this.config.tty.small_pixel_frame_rate +
@@ -255,13 +258,23 @@ export default class extends utils.mixins(CommonMixin, TTYCommandsMixin) {
     setInterval(() => {
       if (this._is_initial_window_size_pending) this._initialWindowResize();
       if (this._isAbleToRequestFrame()) {
+        this._frame_in_flight = true;
         this.sendToCurrentTab("/request_frame");
       }
     }, this.config.tty.small_pixel_frame_rate);
   }
 
+  // Called by tab when frame send is complete, clearing backpressure
+  frameCompleted() {
+    this._frame_in_flight = false;
+  }
+
   _isAbleToRequestFrame() {
     if (this._is_raw_text_mode) {
+      return false;
+    }
+    // Backpressure: skip if previous frame hasn't been sent yet
+    if (this._frame_in_flight) {
       return false;
     }
     if (!this.dimensions.tty.width || !this.dimensions.tty.height) {
