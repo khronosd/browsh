@@ -115,6 +115,9 @@ func parseBinaryFramePixels(data []byte) {
 	if f.isDOMSizeChanged || f.pixels == nil {
 		f.pixels = make([][2]tcell.Color, sliceSize)
 		f.pixelsValid = make([]bool, sliceSize)
+	} else if sliceSize > len(f.pixels) {
+		f.pixels = append(f.pixels, make([][2]tcell.Color, sliceSize-len(f.pixels))...)
+		f.pixelsValid = append(f.pixelsValid, make([]bool, sliceSize-len(f.pixelsValid))...)
 	}
 
 	f.cells.copyFrontToBack()
@@ -258,6 +261,11 @@ func parseBinaryFrameText(data []byte) {
 		f.text = make([][]rune, sliceSize)
 		f.textColours = make([]tcell.Color, sliceSize)
 		f.textValid = make([]bool, sliceSize)
+	} else if sliceSize > len(f.text) {
+		// Grow slices without wiping existing data
+		f.text = append(f.text, make([][]rune, sliceSize-len(f.text))...)
+		f.textColours = append(f.textColours, make([]tcell.Color, sliceSize-len(f.textColours))...)
+		f.textValid = append(f.textValid, make([]bool, sliceSize-len(f.textValid))...)
 	}
 
 	// Parse null-separated text into a slice of strings
@@ -356,7 +364,13 @@ func (f *frame) buildFramePixels(incoming incomingFramePixels) {
 }
 
 func (f *frame) setup(meta jsonFrameBase) {
-	f.isDOMSizeChanged = meta.TotalWidth != f.totalWidth || meta.TotalHeight != f.totalHeight
+	widthChanged := meta.TotalWidth != f.totalWidth
+	heightGrew := meta.TotalHeight > f.totalHeight
+	heightShrunk := meta.TotalHeight < f.totalHeight
+	// Only consider it a full DOM size change if width changed or height shrunk.
+	// Height growing (page loading more content) should NOT wipe existing frame data
+	// because the old cells are still valid at their original positions.
+	f.isDOMSizeChanged = widthChanged || heightShrunk
 	// Update dimensions before resetCells so size calculation is correct
 	f.subWidth = meta.SubWidth
 	f.subHeight = meta.SubHeight
@@ -366,6 +380,9 @@ func (f *frame) setup(meta jsonFrameBase) {
 	f.subTop = meta.SubTop
 	if f.isDOMSizeChanged || f.cells == nil {
 		f.resetCells()
+	} else if heightGrew {
+		// Height grew — expand slices without wiping existing data
+		f.growCells()
 	}
 	if f.inputBoxes == nil {
 		f.inputBoxes = make(map[string]*inputBox)
@@ -378,6 +395,27 @@ func (f *frame) resetCells() {
 		size = 1
 	}
 	f.cells = newDoubleBufferedCells(size)
+}
+
+// growCells expands the cell storage to fit a larger DOM without wiping existing data.
+func (f *frame) growCells() {
+	newSize := f.domRowCount() * f.totalWidth
+	if newSize <= 0 {
+		newSize = 1
+	}
+	if f.cells != nil {
+		oldFront := f.cells.buffers[f.cells.active.Load()]
+		if newSize > oldFront.size {
+			newDB := newDoubleBufferedCells(newSize)
+			// Copy existing cells into the new front buffer
+			newFront := newDB.buffers[newDB.active.Load()]
+			copy(newFront.cells, oldFront.cells)
+			copy(newFront.valid, oldFront.valid)
+			f.cells = newDB
+		}
+	} else {
+		f.cells = newDoubleBufferedCells(newSize)
+	}
 }
 
 func (f *frame) isIncomingFrameTextValid(incoming incomingFrameText) bool {
@@ -444,6 +482,10 @@ func (f *frame) populateFrameText(incoming incomingFrameText) {
 		f.text = make([][]rune, sliceSize)
 		f.textColours = make([]tcell.Color, sliceSize)
 		f.textValid = make([]bool, sliceSize)
+	} else if sliceSize > len(f.text) {
+		f.text = append(f.text, make([][]rune, sliceSize-len(f.text))...)
+		f.textColours = append(f.textColours, make([]tcell.Color, sliceSize-len(f.textColours))...)
+		f.textValid = append(f.textValid, make([]bool, sliceSize-len(f.textValid))...)
 	}
 	// Copy front buffer to back so incremental sub-frames preserve existing cells
 	f.cells.copyFrontToBack()
@@ -474,6 +516,9 @@ func (f *frame) populateFramePixels(incoming incomingFramePixels) {
 	if f.isDOMSizeChanged || f.pixels == nil {
 		f.pixels = make([][2]tcell.Color, sliceSize)
 		f.pixelsValid = make([]bool, sliceSize)
+	} else if sliceSize > len(f.pixels) {
+		f.pixels = append(f.pixels, make([][2]tcell.Color, sliceSize-len(f.pixels))...)
+		f.pixelsValid = append(f.pixelsValid, make([]bool, sliceSize-len(f.pixelsValid))...)
 	}
 	data := incoming.Colours
 	// Copy front buffer to back so incremental sub-frames preserve existing cells
