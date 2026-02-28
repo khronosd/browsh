@@ -119,6 +119,7 @@ func parseBinaryFramePixels(data []byte) {
 
 	f.cells.copyFrontToBack()
 	var cellIndex int
+	pixelDataLen := len(pixelData)
 	for y := 0; y < meta.SubHeight; y += 2 {
 		for x := 0; x < meta.SubWidth; x++ {
 			cellIndex = f.getCellIndexFromSubCoords(x, y)
@@ -127,6 +128,10 @@ func parseBinaryFramePixels(data []byte) {
 			}
 			bgOffset := ((y * meta.SubWidth) + x) * 3
 			fgOffset := (((y + 1) * meta.SubWidth) + x) * 3
+			// Bounds check: ensure both bg and fg pixel data are available
+			if bgOffset+2 >= pixelDataLen || fgOffset+2 >= pixelDataLen {
+				continue
+			}
 			f.pixels[cellIndex] = [2]tcell.Color{
 				tcell.NewRGBColor(
 					int32(pixelData[bgOffset]),
