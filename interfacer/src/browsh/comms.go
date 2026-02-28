@@ -12,6 +12,13 @@ import (
 	"github.com/spf13/viper"
 )
 
+// Binary frame message types
+const (
+	msgTypePixels   byte = 0x01
+	msgTypeText     byte = 0x02
+	binaryHeaderLen      = 15
+)
+
 var (
 	upgrader = websocket.Upgrader{
 		CheckOrigin:     func(r *http.Request) bool { return true },
@@ -50,7 +57,7 @@ func sendMessageToWebExtension(message string) {
 func webSocketReader(ws *websocket.Conn) {
 	defer ws.Close()
 	for {
-		_, message, err := ws.ReadMessage()
+		messageType, message, err := ws.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseGoingAway) {
 				slog.Info("Socket reader detected that the browser closed the websocket")
@@ -64,7 +71,27 @@ func webSocketReader(ws *websocket.Conn) {
 			}
 			Shutdown(err)
 		}
-		handleWebextensionCommand(message)
+		if messageType == websocket.BinaryMessage {
+			handleBinaryFrame(message)
+		} else {
+			handleWebextensionCommand(message)
+		}
+	}
+}
+
+func handleBinaryFrame(data []byte) {
+	if len(data) < binaryHeaderLen {
+		slog.Warn("Binary frame too short", "len", len(data))
+		return
+	}
+	switch data[0] {
+	case msgTypePixels:
+		parseBinaryFramePixels(data)
+		renderCurrentTabWindow()
+	case msgTypeText:
+		parseBinaryFrameText(data)
+	default:
+		slog.Warn("Unknown binary frame type", "type", data[0])
 	}
 }
 
@@ -100,6 +127,8 @@ func handleWebextensionCommand(message []byte) {
 		if ct != nil {
 			renderUI()
 		}
+	case "/input_boxes":
+		parseInputBoxes(strings.Join(parts[1:], ","))
 	case "/screenshot":
 		saveScreenshot(payload)
 	default:

@@ -304,12 +304,89 @@ export default (MixinBase) =>
     }
 
     _sendFrame() {
-      this._serialiseFrame();
-      if (this.frame.text.length > 0) {
-        this.sendMessage(`/frame_text,${JSON.stringify(this.frame)}`);
+      const binaryFrame = this._serialiseBinaryTextFrame();
+      if (binaryFrame) {
+        this.sendBinaryMessage(binaryFrame);
       } else {
         this.log("Not sending empty text frame");
       }
+    }
+
+    _serialiseBinaryTextFrame() {
+      const meta = this.dimensions.getFrameMeta();
+      meta.id = parseInt(this.channel.name);
+      const top = this.dimensions.frame.sub.top / 2;
+      const left = this.dimensions.frame.sub.left;
+      const bottom = top + this.dimensions.frame.sub.height / 2;
+      const right = left + this.dimensions.frame.sub.width;
+      const cellCount = (bottom - top) * (right - left);
+      if (cellCount <= 0) return null;
+
+      // Build colour and text arrays
+      const colourBytes = new Uint8Array(cellCount * 3);
+      const textParts = [];
+      let ci = 0;
+      for (let y = top; y < bottom; y++) {
+        for (let x = left; x < right; x++) {
+          const index = y * this.dimensions.frame.width + x;
+          const cell = this.tty_grid.cells[index];
+          if (cell === undefined || !cell.fg_colour) {
+            colourBytes[ci] = 0;
+            colourBytes[ci + 1] = 0;
+            colourBytes[ci + 2] = 0;
+            textParts.push("");
+          } else {
+            colourBytes[ci] = cell.fg_colour[0];
+            colourBytes[ci + 1] = cell.fg_colour[1];
+            colourBytes[ci + 2] = cell.fg_colour[2];
+            textParts.push(cell.rune);
+          }
+          ci += 3;
+        }
+      }
+
+      // Encode text as null-separated UTF-8
+      const textEncoded = new TextEncoder().encode(textParts.join("\0"));
+
+      // Build binary frame
+      const headerSize = 15;
+      const colourLenSize = 4;
+      const colourLen = colourBytes.length;
+      const totalSize = headerSize + colourLenSize + colourLen + textEncoded.length;
+      const buffer = new ArrayBuffer(totalSize);
+      const view = new DataView(buffer);
+      const bytes = new Uint8Array(buffer);
+
+      // Header
+      view.setUint8(0, 0x02); // type: text
+      view.setUint16(1, meta.id);
+      view.setUint16(3, meta.sub_left);
+      view.setUint16(5, meta.sub_top);
+      view.setUint16(7, meta.sub_width);
+      view.setUint16(9, meta.sub_height);
+      view.setUint16(11, meta.total_width);
+      view.setUint16(13, meta.total_height);
+
+      // Colour data length
+      view.setUint32(headerSize, colourLen);
+
+      // Colour data
+      bytes.set(colourBytes, headerSize + colourLenSize);
+
+      // Text data
+      bytes.set(textEncoded, headerSize + colourLenSize + colourLen);
+
+      // Also send input boxes via JSON (they're small and infrequent)
+      this._serialiseInputBoxes();
+      if (this.frame && this.frame.input_boxes) {
+        const inputBoxMsg = `/input_boxes,${JSON.stringify({
+          meta: meta,
+          input_boxes: this.frame.input_boxes,
+        })}`;
+        this.sendMessage(inputBoxMsg);
+      }
+
+      return buffer;
     }
 
     _addCell(x, y, right) {

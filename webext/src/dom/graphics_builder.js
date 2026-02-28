@@ -225,21 +225,56 @@ export default class extends utils.mixins(CommonMixin) {
   }
 
   _sendFrame() {
-    this._serialiseFrame();
-    if (this.frame.colours.length > 0) {
-      this.sendMessage(`/frame_pixels,${JSON.stringify(this.frame)}`);
+    const binaryFrame = this._serialiseBinaryFrame();
+    if (binaryFrame) {
+      this.sendBinaryMessage(binaryFrame);
     } else {
       this.log("Not sending empty pixels frame");
     }
   }
 
+  _serialiseBinaryFrame() {
+    const meta = this.dimensions.getFrameMeta();
+    meta.id = parseInt(this.channel.name);
+    const width = this.dimensions.frame.sub.width;
+    const height = this.dimensions.frame.sub.height;
+    const pixelCount = width * height;
+    if (pixelCount <= 0 || !this.scaled_pixels) return null;
+
+    const headerSize = 15;
+    const buffer = new ArrayBuffer(headerSize + pixelCount * 3);
+    const view = new DataView(buffer);
+    const bytes = new Uint8Array(buffer);
+
+    // Header: type(1) + tabID(2) + subLeft(2) + subTop(2) + subWidth(2)
+    //         + subHeight(2) + totalWidth(2) + totalHeight(2) = 15 bytes
+    view.setUint8(0, 0x01); // type: pixels
+    view.setUint16(1, meta.id);
+    view.setUint16(3, meta.sub_left);
+    view.setUint16(5, meta.sub_top);
+    view.setUint16(7, meta.sub_width);
+    view.setUint16(9, meta.sub_height);
+    view.setUint16(11, meta.total_width);
+    view.setUint16(13, meta.total_height);
+
+    // RGB pixel data, skipping alpha channel from RGBA ImageData
+    let offset = headerSize;
+    for (let i = 0; i < pixelCount; i++) {
+      bytes[offset++] = this.scaled_pixels[i * 4];
+      bytes[offset++] = this.scaled_pixels[i * 4 + 1];
+      bytes[offset++] = this.scaled_pixels[i * 4 + 2];
+    }
+
+    return buffer;
+  }
+
+  // JSON serialisation kept for _getScaledDataURI path and tests
   _serialiseFrame() {
     this._setupFrameMeta();
     const width = this.dimensions.frame.sub.width;
     const height = this.dimensions.frame.sub.height;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        // TODO: Explore sending as binary data
         this._getScaledPixelAt(x, y).map((c) => this.frame.colours.push(c));
       }
     }

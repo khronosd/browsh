@@ -7,6 +7,11 @@ export default (MixinBase) =>
     // TODO: There needs to be some consistency in this message sending protocol.
     //       Eg; always requiring JSON.
     handleTabMessage(message) {
+      // Handle binary frame messages (ArrayBuffer wrapped as object)
+      if (message && message.__binary) {
+        this.sendBinaryToTerminal(new Uint8Array(message.data).buffer);
+        return;
+      }
       let incoming;
       const parts = message.split(",");
       const command = parts[0];
@@ -16,6 +21,9 @@ export default (MixinBase) =>
           break;
         case "/frame_pixels":
           this.sendToTerminal(`/frame_pixels,${message.slice(14)}`);
+          break;
+        case "/input_boxes":
+          this.sendToTerminal(message);
           break;
         case "/tab_info":
           incoming = JSON.parse(utils.rebuildArgsToSingleArg(parts));

@@ -12,6 +12,20 @@ export default (MixinBase) =>
       this.channel.postMessage(message);
     }
 
+    // Send an ArrayBuffer as a binary message. The background process
+    // forwards this directly to the WebSocket as a binary frame.
+    sendBinaryMessage(buffer) {
+      if (this.channel == undefined) {
+        return;
+      }
+      // Convert to a plain array for postMessage compatibility across
+      // the content-script/background boundary
+      this.channel.postMessage({
+        __binary: true,
+        data: Array.from(new Uint8Array(buffer)),
+      });
+    }
+
     log(...messages) {
       if (this.channel == undefined) {
         return;

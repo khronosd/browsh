@@ -21,6 +21,16 @@ export default (MixinBase) =>
       }
     }
 
+    // Send an ArrayBuffer as a binary WebSocket frame
+    sendBinaryToTerminal(buffer) {
+      if (this.terminal === undefined) {
+        return;
+      }
+      if (this.terminal.readyState === 1) {
+        this.terminal.send(buffer);
+      }
+    }
+
     log(...messages) {
       if (messages === undefined) {
         messages = "undefined";
