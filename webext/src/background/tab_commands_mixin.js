@@ -35,6 +35,12 @@ export default (MixinBase) =>
           incoming = JSON.parse(utils.rebuildArgsToSingleArg(parts));
           this._rawTextRequest(incoming);
           break;
+        case "/frame_complete":
+          // Clear backpressure flag via callback if set
+          if (this._onFrameComplete) {
+            this._onFrameComplete();
+          }
+          break;
         default:
           this.log("Unknown command from tab to background", message);
       }

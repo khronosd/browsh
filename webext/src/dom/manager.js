@@ -59,6 +59,8 @@ export default class extends utils.mixins(CommonMixin, CommandsMixin) {
       this.sendMessage("/status,parsing_complete");
     }
     this._is_first_frame_finished = true;
+    // Signal frame completion to clear backpressure in background process
+    this.sendMessage("/frame_complete");
   }
 
   sendAllBigFrames() {
