@@ -120,10 +120,11 @@ func parseBinaryFramePixels(data []byte) {
 	f.cells.copyFrontToBack()
 	var cellIndex int
 	pixelDataLen := len(pixelData)
+	pixelsLen := len(f.pixels)
 	for y := 0; y < meta.SubHeight; y += 2 {
 		for x := 0; x < meta.SubWidth; x++ {
 			cellIndex = f.getCellIndexFromSubCoords(x, y)
-			if cellIndex < 0 || cellIndex >= sliceSize {
+			if cellIndex < 0 || cellIndex >= pixelsLen {
 				continue
 			}
 			bgOffset := ((y * meta.SubWidth) + x) * 3
@@ -144,7 +145,9 @@ func parseBinaryFramePixels(data []byte) {
 					int32(pixelData[fgOffset+2]),
 				),
 			}
-			f.pixelsValid[cellIndex] = true
+			if cellIndex < len(f.pixelsValid) {
+				f.pixelsValid[cellIndex] = true
+			}
 			f.buildCell(f.subLeft+x, (f.subTop+y)/2)
 		}
 	}
