@@ -1,9 +1,6 @@
-import _ from "lodash";
-
 import utils from "utils";
 import CommonMixin from "dom/common_mixin";
 import SerialiseMixin from "dom/serialise_mixin";
-import TTYCell from "dom/tty_cell";
 import TTYGrid from "dom/tty_grid";
 
 // Convert the text on the page into a snapped 2-dimensional grid to be displayed directly
@@ -60,7 +57,7 @@ export default class extends utils.mixins(CommonMixin, SerialiseMixin) {
 
   _updateState() {
     this.tty_grid.cells = [];
-    this._parse_started_elements = [];
+    this._parse_started_elements = new Set();
     this._previous_dom_box = {};
     this._convertSubFrameToViewportCoords();
   }
@@ -86,8 +83,14 @@ export default class extends utils.mixins(CommonMixin, SerialiseMixin) {
   }
 
   // Search through every node in the DOM looking for displayable text.
+  // Results are cached and only rebuilt when the DOM changes (signaled
+  // by MutationObserver setting _text_nodes_dirty = true).
   __getTextNodes() {
+    if (this._text_nodes && !this._text_nodes_dirty) {
+      return;
+    }
     this._text_nodes = [];
+    this._text_nodes_dirty = false;
     const walker = document.createTreeWalker(
       document.body,
       NodeFilter.SHOW_TEXT,
@@ -224,13 +227,11 @@ export default class extends utils.mixins(CommonMixin, SerialiseMixin) {
   // element (like a link), where that sub-element contains leading whitespace.
   _isFirstParseInElement() {
     let element = this._node.parentElement;
-    const is_parse_started = _.includes(this._parse_started_elements, element);
-    if (is_parse_started) {
+    if (this._parse_started_elements.has(element)) {
       return false;
-    } else {
-      this._parse_started_elements.push(element);
-      return true;
     }
+    this._parse_started_elements.add(element);
+    return true;
   }
 
   // Here is where we actually make use of the rather strict monospaced and fixed font size
@@ -252,7 +253,11 @@ export default class extends utils.mixins(CommonMixin, SerialiseMixin) {
       this._dom_box.left = dom_box.left;
       this._dom_box.width = dom_box.width;
       this._handleSingleDOMBox();
-      this._previous_dom_box = _.clone(this._dom_box);
+      this._previous_dom_box = {
+        top: this._dom_box.top,
+        left: this._dom_box.left,
+        width: this._dom_box.width,
+      };
     }
   }
 
@@ -317,11 +322,15 @@ export default class extends utils.mixins(CommonMixin, SerialiseMixin) {
   }
 
   _handleSingleCharacter() {
-    let cell = new TTYCell();
-    cell.rune = this._current_character;
-    cell.tty_coords = _.clone(this._tty_tracker);
-    cell.dom_coords = _.clone(this._dom_tracker);
-    cell.parent_element = this._node.parentElement;
+    const cell = {
+      rune: this._current_character,
+      tty_coords: { x: this._tty_tracker.x, y: this._tty_tracker.y },
+      dom_coords: { x: this._dom_tracker.x, y: this._dom_tracker.y },
+      parent_element: this._node.parentElement,
+      index: 0,
+      fg_colour: null,
+      bg_colour: null,
+    };
     this.tty_grid.addCell(cell);
   }
 

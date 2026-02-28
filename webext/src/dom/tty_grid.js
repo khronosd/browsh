@@ -28,10 +28,17 @@ export default class {
 
   _isNewCellAtHighestLayer(new_cell) {
     let existing_cell = this.cells[new_cell.index];
-
-    return !(
-      existing_cell !== undefined && !new_cell.isHighestLayer(existing_cell)
+    if (existing_cell === undefined) return true;
+    // When a character clobbers another in the grid, use elementFromPoint
+    // to determine which is on top. This is expensive but only triggers
+    // on cell collisions, not every cell.
+    const found_element = document.elementFromPoint(
+      new_cell.dom_coords.x,
+      new_cell.dom_coords.y
     );
+    // If elementFromPoint returns null (element not in viewport), assume visible
+    if (found_element === null) return true;
+    return new_cell.parent_element === found_element;
   }
 
   _handleCellVisibility(new_cell) {

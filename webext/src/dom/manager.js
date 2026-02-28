@@ -210,10 +210,12 @@ export default class extends utils.mixins(CommonMixin, CommandsMixin) {
   _startMutationObserver() {
     let target = document.querySelector("body");
     let observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        this.log("!!MUTATION!!", mutation);
-        this._debouncedSmallTextFrame();
-      });
+      // Invalidate cached text nodes so TreeWalker re-runs on next frame
+      if (this.text_builder) {
+        this.text_builder._text_nodes_dirty = true;
+      }
+      this.log("!!MUTATION!!", mutations.length, "changes");
+      this._debouncedSmallTextFrame();
     });
     observer.observe(target, {
       subtree: true,
