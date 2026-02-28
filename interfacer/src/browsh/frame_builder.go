@@ -1,6 +1,7 @@
 package browsh
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -61,10 +62,162 @@ type incomingFrameText struct {
 	InputBoxes map[string]inputBox `json:"input_boxes"`
 }
 
-// TODO: Can these be sent as binary blobs?
 type incomingFramePixels struct {
 	Meta    jsonFrameBase `json:"meta"`
 	Colours []int32       `json:"colours"`
+}
+
+// Binary frame header layout (15 bytes):
+//   [0]     message type (0x01=pixels, 0x02=text)
+//   [1:3]   tab ID (uint16 big-endian)
+//   [3:5]   sub_left
+//   [5:7]   sub_top
+//   [7:9]   sub_width
+//   [9:11]  sub_height
+//   [11:13] total_width
+//   [13:15] total_height
+func parseBinaryHeader(data []byte) jsonFrameBase {
+	return jsonFrameBase{
+		TabID:       int(binary.BigEndian.Uint16(data[1:3])),
+		SubLeft:     int(binary.BigEndian.Uint16(data[3:5])),
+		SubTop:      int(binary.BigEndian.Uint16(data[5:7])),
+		SubWidth:    int(binary.BigEndian.Uint16(data[7:9])),
+		SubHeight:   int(binary.BigEndian.Uint16(data[9:11])),
+		TotalWidth:  int(binary.BigEndian.Uint16(data[11:13])),
+		TotalHeight: int(binary.BigEndian.Uint16(data[13:15])),
+	}
+}
+
+// parseBinaryFramePixels parses a binary pixel frame.
+// After the 15-byte header, the payload is raw RGB triplets (3 bytes per pixel).
+func parseBinaryFramePixels(data []byte) {
+	meta := parseBinaryHeader(data)
+	tabsMu.RLock()
+	defer tabsMu.RUnlock()
+	if !isTabPresentLocked(meta.TabID) {
+		slog.Warn("Not building binary pixel frame for non-existent tab", "TabID", meta.TabID)
+		return
+	}
+	if Tabs[meta.TabID].frame.text == nil {
+		return
+	}
+	f := &Tabs[meta.TabID].frame
+	f.setup(meta)
+
+	pixelData := data[binaryHeaderLen:]
+	expectedPixels := meta.SubWidth * meta.SubHeight
+	if len(pixelData) < expectedPixels*3 {
+		slog.Warn("Binary pixel frame too short", "expected", expectedPixels*3, "got", len(pixelData))
+		return
+	}
+
+	sliceSize := f.domRowCount() * f.totalWidth
+	if f.isDOMSizeChanged || f.pixels == nil {
+		f.pixels = make([][2]tcell.Color, sliceSize)
+		f.pixelsValid = make([]bool, sliceSize)
+	}
+
+	f.cells.copyFrontToBack()
+	var cellIndex int
+	for y := 0; y < meta.SubHeight; y += 2 {
+		for x := 0; x < meta.SubWidth; x++ {
+			cellIndex = f.getCellIndexFromSubCoords(x, y)
+			if cellIndex < 0 || cellIndex >= sliceSize {
+				continue
+			}
+			bgOffset := ((y * meta.SubWidth) + x) * 3
+			fgOffset := (((y + 1) * meta.SubWidth) + x) * 3
+			f.pixels[cellIndex] = [2]tcell.Color{
+				tcell.NewRGBColor(
+					int32(pixelData[bgOffset]),
+					int32(pixelData[bgOffset+1]),
+					int32(pixelData[bgOffset+2]),
+				),
+				tcell.NewRGBColor(
+					int32(pixelData[fgOffset]),
+					int32(pixelData[fgOffset+1]),
+					int32(pixelData[fgOffset+2]),
+				),
+			}
+			f.pixelsValid[cellIndex] = true
+			f.buildCell(f.subLeft+x, (f.subTop+y)/2)
+		}
+	}
+	f.cells.swap()
+}
+
+// parseBinaryFrameText parses a binary text frame.
+// Layout after 15-byte header:
+//   [15:19]  colour data length in bytes (uint32 big-endian)
+//   [19:19+colourLen]  RGB colour data (3 bytes per cell)
+//   [19+colourLen:]    UTF-8 text data, null-separated per cell
+func parseBinaryFrameText(data []byte) {
+	if len(data) < binaryHeaderLen+4 {
+		slog.Warn("Binary text frame too short for colour length")
+		return
+	}
+	meta := parseBinaryHeader(data)
+	tabsMu.RLock()
+	defer tabsMu.RUnlock()
+	if !isTabPresentLocked(meta.TabID) {
+		slog.Info(fmt.Sprintf("Not building binary text frame for non-existent tab ID: %d", meta.TabID))
+		return
+	}
+	f := &Tabs[meta.TabID].frame
+	f.setup(meta)
+
+	colourLen := int(binary.BigEndian.Uint32(data[binaryHeaderLen : binaryHeaderLen+4]))
+	colourStart := binaryHeaderLen + 4
+	colourEnd := colourStart + colourLen
+	if len(data) < colourEnd {
+		slog.Warn("Binary text frame truncated in colour data")
+		return
+	}
+	colourData := data[colourStart:colourEnd]
+	textData := data[colourEnd:]
+
+	cellCount := meta.SubWidth * (meta.SubHeight / 2)
+	sliceSize := f.domRowCount() * f.totalWidth
+	if f.isDOMSizeChanged || f.text == nil {
+		f.text = make([][]rune, sliceSize)
+		f.textColours = make([]tcell.Color, sliceSize)
+		f.textValid = make([]bool, sliceSize)
+	}
+
+	// Parse null-separated text into a slice of strings
+	textStrings := make([]string, 0, cellCount)
+	start := 0
+	for i := 0; i <= len(textData); i++ {
+		if i == len(textData) || textData[i] == 0 {
+			textStrings = append(textStrings, string(textData[start:i]))
+			start = i + 1
+		}
+	}
+
+	f.cells.copyFrontToBack()
+	for y := 0; y < f.subRowCount(); y++ {
+		for x := 0; x < f.subWidth; x++ {
+			cellIndex := f.getCellIndexFromSubCoords(x, y*2)
+			if cellIndex < 0 || cellIndex >= sliceSize {
+				continue
+			}
+			frameIndex := (y * f.subWidth) + x
+			colourOffset := frameIndex * 3
+			if colourOffset+2 < len(colourData) {
+				f.textColours[cellIndex] = tcell.NewRGBColor(
+					int32(colourData[colourOffset]),
+					int32(colourData[colourOffset+1]),
+					int32(colourData[colourOffset+2]),
+				)
+			}
+			if frameIndex < len(textStrings) {
+				f.text[cellIndex] = []rune(textStrings[frameIndex])
+			}
+			f.textValid[cellIndex] = true
+			f.buildCell(f.subLeft+x, (f.subTop/2)+y)
+		}
+	}
+	f.cells.swap()
 }
 
 func (f *frame) domRowCount() int {
@@ -158,6 +311,31 @@ func (f *frame) isIncomingFrameTextValid(incoming incomingFrameText) bool {
 		return false
 	}
 	return true
+}
+
+// parseInputBoxes handles the separate /input_boxes JSON message sent
+// alongside binary text frames.
+func parseInputBoxes(jsonString string) {
+	var incoming struct {
+		Meta       jsonFrameBase       `json:"meta"`
+		InputBoxes map[string]inputBox `json:"input_boxes"`
+	}
+	if err := json.Unmarshal([]byte(jsonString), &incoming); err != nil {
+		slog.Warn("Failed to parse input_boxes", "error", err)
+		return
+	}
+	tabsMu.RLock()
+	defer tabsMu.RUnlock()
+	if !isTabPresentLocked(incoming.Meta.TabID) {
+		return
+	}
+	f := &Tabs[incoming.Meta.TabID].frame
+	if f.inputBoxes == nil {
+		f.inputBoxes = make(map[string]*inputBox)
+	}
+	// Reuse the existing updateInputBoxes logic via a shim
+	textShim := incomingFrameText{InputBoxes: incoming.InputBoxes}
+	f.updateInputBoxes(textShim)
 }
 
 // TODO: There must be a more idiomatic way of doing this?
