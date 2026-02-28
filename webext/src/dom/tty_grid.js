@@ -54,14 +54,14 @@ export default class {
     return cell.tty_coords.y * this.dimensions.frame.width + cell.tty_coords.x;
   }
 
-  // Get the colours for a cell. When experimental text visibility is enabled,
-  // samples pixel data from with/without-text screenshots. Otherwise uses
-  // getComputedStyle which avoids 2 expensive drawWindow() calls per frame.
+  // Get the colours for a cell. Default uses pixel-sampling from screenshots
+  // (reliable on all pages). Experimental mode uses getComputedStyle (faster
+  // but can produce wrong colors on complex pages).
   _getColours(cell) {
-    if (this.config.browsh.use_experimental_text_visibility) {
-      return this._getColoursFromScreenshots(cell);
+    if (this.config.browsh.use_experimental_computed_style_colors) {
+      return this._getColoursFromComputedStyle(cell);
     }
-    return this._getColoursFromComputedStyle(cell);
+    return this._getColoursFromScreenshots(cell);
   }
 
   // Original pixel-sampling approach: requires two full-viewport screenshots

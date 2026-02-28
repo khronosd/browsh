@@ -38,25 +38,24 @@ export default class extends utils.mixins(CommonMixin, SerialiseMixin) {
 
   buildFormattedText(callback) {
     this._updateState();
-    if (this.config.browsh.use_experimental_text_visibility) {
-      // Two extra drawWindow() calls to detect text visibility by pixel-diffing
+    if (this.config.browsh.use_experimental_computed_style_colors) {
+      // Experimental: skip the expensive on/off screenshots — use getComputedStyle
+      // for colors. Faster but can produce wrong colors on complex pages.
+      this.graphics_builder.showText();
+      this.dimensions.update();
+      this._getTextNodes();
+      this._positionTextNodes();
+      this.graphics_builder.hideText();
+      callback();
+    } else {
+      // Default: two drawWindow() calls to detect text visibility by pixel-diffing.
+      // More expensive but produces correct colors on all pages.
       this.graphics_builder.getOnOffScreenshots(() => {
         this.dimensions.update();
         this._getTextNodes();
         this._positionTextNodes();
         callback();
       });
-    } else {
-      // Skip the expensive on/off screenshots — use getComputedStyle for colors.
-      // Must show text so getComputedStyle can read correct styles and so
-      // getBoundingClientRect returns correct positions for text nodes.
-      this.graphics_builder.showText();
-      this.dimensions.update();
-      this._getTextNodes();
-      this._positionTextNodes();
-      // Hide text again so pixel screenshots capture background only
-      this.graphics_builder.hideText();
-      callback();
     }
   }
 
