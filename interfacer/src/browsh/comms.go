@@ -132,7 +132,7 @@ func handleWebextensionCommand(message []byte) {
 			renderUI()
 		}
 	case "/input_boxes":
-		parseInputBoxes(strings.Join(parts[1:], ","))
+		parseInputBoxes(payload)
 	case "/screenshot":
 		saveScreenshot(payload)
 	default:
