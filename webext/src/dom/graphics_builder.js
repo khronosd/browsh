@@ -225,30 +225,120 @@ export default class extends utils.mixins(CommonMixin) {
   }
 
   _sendFrame() {
-    const binaryFrame = this._serialiseBinaryFrame();
-    if (binaryFrame) {
-      this.sendBinaryMessage(binaryFrame);
-    } else {
-      this.log("Not sending empty pixels frame");
-    }
-  }
-
-  _serialiseBinaryFrame() {
     const meta = this.dimensions.getFrameMeta();
     meta.id = parseInt(this.channel.name);
     const width = this.dimensions.frame.sub.width;
     const height = this.dimensions.frame.sub.height;
     const pixelCount = width * height;
-    if (pixelCount <= 0 || !this.scaled_pixels) return null;
+    if (pixelCount <= 0 || !this.scaled_pixels) {
+      this.log("Not sending empty pixels frame");
+      return;
+    }
 
+    // Build current RGB data (strip alpha from RGBA ImageData)
+    const currentRGB = new Uint8Array(pixelCount * 3);
+    for (let i = 0; i < pixelCount; i++) {
+      currentRGB[i * 3] = this.scaled_pixels[i * 4];
+      currentRGB[i * 3 + 1] = this.scaled_pixels[i * 4 + 1];
+      currentRGB[i * 3 + 2] = this.scaled_pixels[i * 4 + 2];
+    }
+
+    // Try to send a diff if we have a previous frame with same dimensions
+    if (
+      this._prevPixelRGB &&
+      this._prevPixelMeta &&
+      this._prevPixelMeta.sub_left === meta.sub_left &&
+      this._prevPixelMeta.sub_top === meta.sub_top &&
+      this._prevPixelMeta.sub_width === meta.sub_width &&
+      this._prevPixelMeta.sub_height === meta.sub_height
+    ) {
+      const diffFrame = this._buildPixelDiff(meta, currentRGB, pixelCount);
+      if (diffFrame !== null) {
+        this.sendBinaryMessage(diffFrame);
+        this._prevPixelRGB = currentRGB;
+        this._prevPixelMeta = meta;
+        return;
+      }
+    }
+
+    // Send full frame (first frame, dimension change, or >50% changed)
+    const fullFrame = this._buildFullPixelFrame(meta, currentRGB, pixelCount);
+    this.sendBinaryMessage(fullFrame);
+    this._prevPixelRGB = currentRGB;
+    this._prevPixelMeta = meta;
+  }
+
+  // Build a diff frame (type 0x03). Returns null if >50% of pixels changed
+  // (in which case a full frame is more efficient).
+  _buildPixelDiff(meta, currentRGB, pixelCount) {
+    const prev = this._prevPixelRGB;
+    const changedIndices = [];
+    for (let i = 0; i < pixelCount; i++) {
+      const off = i * 3;
+      if (
+        currentRGB[off] !== prev[off] ||
+        currentRGB[off + 1] !== prev[off + 1] ||
+        currentRGB[off + 2] !== prev[off + 2]
+      ) {
+        changedIndices.push(i);
+      }
+    }
+
+    if (changedIndices.length === 0) {
+      // Nothing changed — send an empty diff
+      return this._buildEmptyDiff(meta);
+    }
+
+    // If >50% changed, a full frame is more compact
+    if (changedIndices.length > pixelCount * 0.5) {
+      return null;
+    }
+
+    // Diff format: [15B header][4B num_changed][per cell: 4B index + 3B RGB]
+    const headerSize = 15;
+    const numChanged = changedIndices.length;
+    const buffer = new ArrayBuffer(headerSize + 4 + numChanged * 7);
+    const view = new DataView(buffer);
+    const bytes = new Uint8Array(buffer);
+
+    this._writeHeader(view, 0x03, meta);
+    view.setUint32(headerSize, numChanged);
+
+    let offset = headerSize + 4;
+    for (const idx of changedIndices) {
+      view.setUint32(offset, idx);
+      const rgbOff = idx * 3;
+      bytes[offset + 4] = currentRGB[rgbOff];
+      bytes[offset + 5] = currentRGB[rgbOff + 1];
+      bytes[offset + 6] = currentRGB[rgbOff + 2];
+      offset += 7;
+    }
+
+    return buffer;
+  }
+
+  _buildEmptyDiff(meta) {
+    const buffer = new ArrayBuffer(15 + 4);
+    const view = new DataView(buffer);
+    this._writeHeader(view, 0x03, meta);
+    view.setUint32(15, 0); // zero changed cells
+    return buffer;
+  }
+
+  _buildFullPixelFrame(meta, rgbData, pixelCount) {
     const headerSize = 15;
     const buffer = new ArrayBuffer(headerSize + pixelCount * 3);
     const view = new DataView(buffer);
     const bytes = new Uint8Array(buffer);
 
-    // Header: type(1) + tabID(2) + subLeft(2) + subTop(2) + subWidth(2)
-    //         + subHeight(2) + totalWidth(2) + totalHeight(2) = 15 bytes
-    view.setUint8(0, 0x01); // type: pixels
+    this._writeHeader(view, 0x01, meta);
+    bytes.set(rgbData, headerSize);
+
+    return buffer;
+  }
+
+  _writeHeader(view, type, meta) {
+    view.setUint8(0, type);
     view.setUint16(1, meta.id);
     view.setUint16(3, meta.sub_left);
     view.setUint16(5, meta.sub_top);
@@ -256,16 +346,6 @@ export default class extends utils.mixins(CommonMixin) {
     view.setUint16(9, meta.sub_height);
     view.setUint16(11, meta.total_width);
     view.setUint16(13, meta.total_height);
-
-    // RGB pixel data, skipping alpha channel from RGBA ImageData
-    let offset = headerSize;
-    for (let i = 0; i < pixelCount; i++) {
-      bytes[offset++] = this.scaled_pixels[i * 4];
-      bytes[offset++] = this.scaled_pixels[i * 4 + 1];
-      bytes[offset++] = this.scaled_pixels[i * 4 + 2];
-    }
-
-    return buffer;
   }
 
   // JSON serialisation kept for _getScaledDataURI path and tests

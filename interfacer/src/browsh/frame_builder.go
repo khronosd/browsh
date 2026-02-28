@@ -146,6 +146,74 @@ func parseBinaryFramePixels(data []byte) {
 	f.cells.swap()
 }
 
+// applyBinaryPixelDiff applies a sparse pixel diff (type 0x03).
+// Layout after 15-byte header:
+//   [15:19]  number of changed cells (uint32 big-endian)
+//   For each changed cell: [4B cell_index (uint32)][3B RGB]
+func applyBinaryPixelDiff(data []byte) {
+	if len(data) < binaryHeaderLen+4 {
+		slog.Warn("Binary pixel diff too short")
+		return
+	}
+	meta := parseBinaryHeader(data)
+	tabsMu.RLock()
+	defer tabsMu.RUnlock()
+	if !isTabPresentLocked(meta.TabID) {
+		return
+	}
+	f := &Tabs[meta.TabID].frame
+	if f.pixels == nil {
+		// No base frame to diff against — skip
+		return
+	}
+
+	numChanged := int(binary.BigEndian.Uint32(data[binaryHeaderLen : binaryHeaderLen+4]))
+	if numChanged == 0 {
+		return
+	}
+
+	payloadStart := binaryHeaderLen + 4
+	expectedLen := payloadStart + numChanged*7
+	if len(data) < expectedLen {
+		slog.Warn("Binary pixel diff truncated", "expected", expectedLen, "got", len(data))
+		return
+	}
+
+	sliceSize := len(f.pixels)
+	f.cells.copyFrontToBack()
+
+	offset := payloadStart
+	for i := 0; i < numChanged; i++ {
+		pixelIdx := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+		r := int32(data[offset+4])
+		g := int32(data[offset+5])
+		b := int32(data[offset+6])
+		offset += 7
+
+		// The pixelIdx is a flat index into the scaled pixel grid.
+		// Map it to a cell index using the sub-frame dimensions.
+		cellX := pixelIdx % meta.SubWidth
+		cellY := (pixelIdx / meta.SubWidth)
+		// Pixel rows come in pairs (bg=even, fg=odd) for the half-block trick
+		subY := (cellY / 2) * 2
+		cellIndex := f.getCellIndexFromSubCoords(cellX, subY)
+		if cellIndex < 0 || cellIndex >= sliceSize {
+			continue
+		}
+
+		// Update the appropriate pixel colour (bg for even rows, fg for odd)
+		if cellY%2 == 0 {
+			f.pixels[cellIndex][0] = tcell.NewRGBColor(r, g, b)
+		} else {
+			f.pixels[cellIndex][1] = tcell.NewRGBColor(r, g, b)
+		}
+		f.pixelsValid[cellIndex] = true
+		f.buildCell(f.subLeft+cellX, (f.subTop+subY)/2)
+	}
+
+	f.cells.swap()
+}
+
 // parseBinaryFrameText parses a binary text frame.
 // Layout after 15-byte header:
 //   [15:19]  colour data length in bytes (uint32 big-endian)
