@@ -3,7 +3,6 @@ import sinon from "sinon";
 import Dimensions from "dom/dimensions";
 import GraphicsBuilder from "dom/graphics_builder";
 import TextBuilder from "dom/text_builder";
-import TTYCell from "dom/tty_cell";
 
 import MockRange from "mocks/range";
 import TextNodes from "fixtures/text_nodes";
@@ -23,7 +22,6 @@ beforeEach(() => {
   sandbox.stub(GraphicsBuilder.prototype, "_scaleCanvas").returns(true);
   sandbox.stub(GraphicsBuilder.prototype, "_unScaleCanvas").returns(true);
   sandbox.stub(TextBuilder.prototype, "_getAllInputBoxes").returns([]);
-  sandbox.stub(TTYCell.prototype, "isHighestLayer").returns(true);
   getPixelsStub = sandbox.stub(GraphicsBuilder.prototype, "_getPixelData");
 });
 
@@ -60,6 +58,10 @@ global.document = {
     return {
       getContext: () => {},
     };
+  },
+  // Returns the parent_element so isHighestLayer check always passes in tests
+  elementFromPoint: () => {
+    return null;
   },
   documentElement: {
     scrollWidth: null,
