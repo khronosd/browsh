@@ -73,6 +73,10 @@ export default class extends utils.mixins(CommonMixin, CommandsMixin) {
     } else {
       this.log("Sending big frames...");
     }
+    // Force re-scan of text nodes since the viewport/sub-frame changed
+    if (this.text_builder) {
+      this.text_builder._text_nodes_dirty = true;
+    }
     this.dimensions.update();
     this.dimensions.setSubFrameDimensions("big");
     this.text_builder.sendFrame();
