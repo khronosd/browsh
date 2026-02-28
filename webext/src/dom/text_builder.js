@@ -47,10 +47,15 @@ export default class extends utils.mixins(CommonMixin, SerialiseMixin) {
         callback();
       });
     } else {
-      // Skip the expensive on/off screenshots — use getComputedStyle for colors
+      // Skip the expensive on/off screenshots — use getComputedStyle for colors.
+      // Must show text so getComputedStyle can read correct styles and so
+      // getBoundingClientRect returns correct positions for text nodes.
+      this.graphics_builder.showText();
       this.dimensions.update();
       this._getTextNodes();
       this._positionTextNodes();
+      // Hide text again so pixel screenshots capture background only
+      this.graphics_builder.hideText();
       callback();
     }
   }
