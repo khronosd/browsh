@@ -20,37 +20,50 @@ import (
 	"github.com/ulule/limiter/drivers/store/memory"
 )
 
-// In order to communicate between the incoming HTTP request and the websocket request to the
-// real browser to render the webpage, we keep track of requests in a map.
-var rawTextRequests = newRequestsMap()
+var kubeProbeRegex = regexp.MustCompile("GoogleHC")
 
-type threadSafeRequestsMap struct {
-	sync.RWMutex
-	internal map[string]string
+// pendingRequests tracks in-flight HTTP-to-browser render requests.
+// Each request gets a channel that the WebSocket handler sends the response on,
+// replacing the previous 1ms busy-wait polling loop with zero-latency notification.
+var pendingRequests = &pendingRequestsMap{
+	internal:   make(map[string]chan string),
+	startTimes: make(map[string]string),
 }
 
-func newRequestsMap() *threadSafeRequestsMap {
-	return &threadSafeRequestsMap{
-		internal: make(map[string]string),
+type pendingRequestsMap struct {
+	sync.Mutex
+	internal   map[string]chan string
+	startTimes map[string]string
+}
+
+func (m *pendingRequestsMap) create(id string, startTime string) chan string {
+	ch := make(chan string, 1)
+	m.Lock()
+	m.internal[id] = ch
+	m.startTimes[id] = startTime
+	m.Unlock()
+	return ch
+}
+
+func (m *pendingRequestsMap) resolve(id string, value string) {
+	m.Lock()
+	ch, ok := m.internal[id]
+	m.Unlock()
+	if ok {
+		ch <- value
 	}
 }
 
-func (m *threadSafeRequestsMap) load(key string) (value string, ok bool) {
-	m.RLock()
-	result, ok := m.internal[key]
-	m.RUnlock()
-	return result, ok
+func (m *pendingRequestsMap) getStartTime(id string) string {
+	m.Lock()
+	defer m.Unlock()
+	return m.startTimes[id]
 }
 
-func (m *threadSafeRequestsMap) store(key string, value string) {
+func (m *pendingRequestsMap) remove(id string) {
 	m.Lock()
-	m.internal[key] = value
-	m.Unlock()
-}
-
-func (m *threadSafeRequestsMap) remove(key string) {
-	m.Lock()
-	delete(m.internal, key)
+	delete(m.internal, id)
+	delete(m.startTimes, id)
 	m.Unlock()
 }
 
@@ -169,13 +182,13 @@ func handleHTTPServerRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rawTextRequestID := pseudoUUID()
-	rawTextRequests.store(rawTextRequestID+"-start", start)
+	responseCh := pendingRequests.create(rawTextRequestID, start)
 	mode := getRawTextMode(r)
 	sendMessageToWebExtension(
 		"/raw_text_request," + rawTextRequestID + "," +
 			mode + "," +
 			urlForBrowsh)
-	waitForResponse(rawTextRequestID, w)
+	waitForResponse(rawTextRequestID, responseCh, w)
 }
 
 // Prevent https://html.brow.sh/html.brow.sh/... being recursive
@@ -192,7 +205,10 @@ func deRecurseURL(urlForBrowsh string) (string, bool) {
 
 func isDisallowedDomain(urlForBrowsh string) bool {
 	for _, domainish := range viper.GetStringSlice("http-server.blocked-domains") {
-		r, _ := regexp.Compile(domainish)
+		r, err := regexp.Compile(domainish)
+		if err != nil {
+			continue
+		}
 		if r.MatchString(urlForBrowsh) {
 			return true
 		}
@@ -202,7 +218,10 @@ func isDisallowedDomain(urlForBrowsh string) bool {
 
 func isDisallowedUserAgent(userAgent string) bool {
 	for _, agentish := range viper.GetStringSlice("http-server.blocked-user-agents") {
-		r, _ := regexp.Compile(agentish)
+		r, err := regexp.Compile(agentish)
+		if err != nil {
+			continue
+		}
 		if r.MatchString(userAgent) {
 			return true
 		}
@@ -211,11 +230,7 @@ func isDisallowedUserAgent(userAgent string) bool {
 }
 
 func isKubeReadinessProbe(userAgent string) bool {
-	r, _ := regexp.Compile("GoogleHC")
-	if r.MatchString(userAgent) {
-		return true
-	}
-	return false
+	return kubeProbeRegex.MatchString(userAgent)
 }
 
 func isProductionHTTP(r *http.Request) bool {
@@ -242,22 +257,13 @@ func getRawTextMode(r *http.Request) string {
 	return mode
 }
 
-func waitForResponse(rawTextRequestID string, w http.ResponseWriter) {
-	var rawTextRequestResponse string
-	var ok bool
-	isSent := false
+func waitForResponse(rawTextRequestID string, responseCh chan string, w http.ResponseWriter) {
+	defer pendingRequests.remove(rawTextRequestID)
 	maxTime := time.Duration(viper.GetInt("http-server.timeout")) * time.Second
-	start := time.Now()
-	for time.Since(start) < maxTime {
-		if rawTextRequestResponse, ok = rawTextRequests.load(rawTextRequestID); ok {
-			sendResponse(rawTextRequestResponse, rawTextRequestID, w)
-			isSent = true
-			break
-		}
-		time.Sleep(1 * time.Millisecond)
-	}
-	rawTextRequests.remove(rawTextRequestID)
-	if !isSent {
+	select {
+	case response := <-responseCh:
+		sendResponse(response, rawTextRequestID, w)
+	case <-time.After(maxTime):
 		timeout := viper.GetInt("http-server.timeout")
 		message := fmt.Sprintf("Browsh rendering aborted after %ds timeout.", timeout)
 		io.WriteString(w, message)
@@ -266,7 +272,7 @@ func waitForResponse(rawTextRequestID string, w http.ResponseWriter) {
 
 func sendResponse(response, rawTextRequestID string, w http.ResponseWriter) {
 	jsonResponse := unpackResponse(response)
-	requestStart, _ := rawTextRequests.load(rawTextRequestID + "-start")
+	requestStart := pendingRequests.getStartTime(rawTextRequestID)
 	totalTime := getTotalTiming(requestStart)
 	pageLoad := fmt.Sprintf("%d", jsonResponse.PageloadDuration)
 	parsing := fmt.Sprintf("%d", jsonResponse.ParsingDuration)

@@ -68,21 +68,32 @@ func webSocketReader(ws *websocket.Conn) {
 	}
 }
 
+// splitCommand splits a message at the first comma, returning (command, payload).
+// This avoids splitting the entire multi-megabyte JSON payload at every comma
+// then re-joining it, which caused 3+ full copies of each frame in memory.
+func splitCommand(msg string) (command, payload string) {
+	idx := strings.IndexByte(msg, ',')
+	if idx == -1 {
+		return msg, ""
+	}
+	return msg[:idx], msg[idx+1:]
+}
+
 func handleWebextensionCommand(message []byte) {
-	parts := strings.Split(string(message), ",")
-	command := parts[0]
+	msg := string(message)
+	command, payload := splitCommand(msg)
 	if viper.GetBool("http-server-mode") {
-		handleRawFrameTextCommands(parts)
+		handleRawFrameTextCommands(command, payload)
 		return
 	}
 	switch command {
 	case "/frame_text":
-		parseJSONFrameText(strings.Join(parts[1:], ","))
+		parseJSONFrameText(payload)
 	case "/frame_pixels":
-		parseJSONFramePixels(strings.Join(parts[1:], ","))
+		parseJSONFramePixels(payload)
 		renderCurrentTabWindow()
 	case "/tab_state":
-		parseJSONTabState(strings.Join(parts[1:], ","))
+		parseJSONTabState(payload)
 		tabsMu.RLock()
 		ct := CurrentTab
 		tabsMu.RUnlock()
@@ -90,28 +101,26 @@ func handleWebextensionCommand(message []byte) {
 			renderUI()
 		}
 	case "/screenshot":
-		saveScreenshot(parts[1])
+		saveScreenshot(payload)
 	default:
-		slog.Info("WEBEXT", "message", string(message))
+		slog.Info("WEBEXT", "message", msg)
 	}
 }
 
-func handleRawFrameTextCommands(parts []string) {
+func handleRawFrameTextCommands(command, payload string) {
 	var incoming incomingRawText
-	command := parts[0]
 	if command == "/raw_text" {
-		jsonBytes := []byte(strings.Join(parts[1:], ","))
-		if err := json.Unmarshal(jsonBytes, &incoming); err != nil {
+		if err := json.Unmarshal([]byte(payload), &incoming); err != nil {
 			Shutdown(err)
 		}
 		if incoming.RequestID != "" {
 			slog.Info("Raw text for", "RequestID", incoming.RequestID)
-			rawTextRequests.store(incoming.RequestID, incoming.RawJSON)
+			pendingRequests.resolve(incoming.RequestID, incoming.RawJSON)
 		} else {
 			slog.Info("Raw text but no associated request ID")
 		}
 	} else {
-		slog.Info("WEBEXT", "command", strings.Join(parts[0:], ","))
+		slog.Info("WEBEXT", "command", command+","+payload)
 	}
 }
 
