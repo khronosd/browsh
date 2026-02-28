@@ -377,11 +377,11 @@ export default (MixinBase) =>
       bytes.set(textEncoded, headerSize + colourLenSize + colourLen);
 
       // Also send input boxes via JSON (they're small and infrequent)
-      this._serialiseInputBoxes();
-      if (this.frame && this.frame.input_boxes) {
+      const input_boxes = this._getAllInputBoxes();
+      if (input_boxes && Object.keys(input_boxes).length > 0) {
         const inputBoxMsg = `/input_boxes,${JSON.stringify({
           meta: meta,
-          input_boxes: this.frame.input_boxes,
+          input_boxes: input_boxes,
         })}`;
         this.sendMessage(inputBoxMsg);
       }
