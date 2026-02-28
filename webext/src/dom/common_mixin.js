@@ -14,16 +14,18 @@ export default (MixinBase) =>
 
     // Send an ArrayBuffer as a binary message. The background process
     // forwards this directly to the WebSocket as a binary frame.
+    // Uses base64 encoding with a prefix to avoid slow structured clone
+    // of large typed arrays across the content/background boundary.
     sendBinaryMessage(buffer) {
       if (this.channel == undefined) {
         return;
       }
-      // Convert to a plain array for postMessage compatibility across
-      // the content-script/background boundary
-      this.channel.postMessage({
-        __binary: true,
-        data: Array.from(new Uint8Array(buffer)),
-      });
+      const bytes = new Uint8Array(buffer);
+      let binaryStr = "";
+      for (let i = 0; i < bytes.length; i++) {
+        binaryStr += String.fromCharCode(bytes[i]);
+      }
+      this.channel.postMessage("__BINARY__" + btoa(binaryStr));
     }
 
     log(...messages) {

@@ -7,9 +7,15 @@ export default (MixinBase) =>
     // TODO: There needs to be some consistency in this message sending protocol.
     //       Eg; always requiring JSON.
     handleTabMessage(message) {
-      // Handle binary frame messages (ArrayBuffer wrapped as object)
-      if (message && message.__binary) {
-        this.sendBinaryToTerminal(new Uint8Array(message.data).buffer);
+      // Handle binary frame messages encoded as base64 string
+      if (typeof message === "string" && message.startsWith("__BINARY__")) {
+        const b64 = message.slice(10);
+        const binaryStr = atob(b64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        this.sendBinaryToTerminal(bytes.buffer);
         return;
       }
       let incoming;
