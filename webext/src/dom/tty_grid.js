@@ -47,9 +47,18 @@ export default class {
     return cell.tty_coords.y * this.dimensions.frame.width + cell.tty_coords.x;
   }
 
-  // Get the colours right in the middle of the character's font. Returns both the colour
-  // when the text is displayed and when it's hidden.
+  // Get the colours for a cell. When experimental text visibility is enabled,
+  // samples pixel data from with/without-text screenshots. Otherwise uses
+  // getComputedStyle which avoids 2 expensive drawWindow() calls per frame.
   _getColours(cell) {
+    if (this.config.browsh.use_experimental_text_visibility) {
+      return this._getColoursFromScreenshots(cell);
+    }
+    return this._getColoursFromComputedStyle(cell);
+  }
+
+  // Original pixel-sampling approach: requires two full-viewport screenshots
+  _getColoursFromScreenshots(cell) {
     const offset_x = utils.snap(
       cell.dom_coords.x + this.dimensions.char.width * this._middle_of_em
     );
@@ -65,6 +74,37 @@ export default class {
       offset_y
     );
     return [fg_colour, bg_colour];
+  }
+
+  // Fast approach: use CSS computed styles instead of pixel sampling.
+  // Eliminates 2 of 3 drawWindow() calls per frame cycle.
+  _getColoursFromComputedStyle(cell) {
+    const element = cell.parent_element;
+    if (!element) return null;
+    const styles = window.getComputedStyle(element);
+    const fg = this._parseRGB(styles.color);
+    const bg = this._findBackgroundColor(element);
+    return [fg, bg];
+  }
+
+  _parseRGB(colorString) {
+    const match = colorString.match(/\d+/g);
+    if (!match || match.length < 3) return [0, 0, 0];
+    return [parseInt(match[0]), parseInt(match[1]), parseInt(match[2])];
+  }
+
+  // Walk up the DOM to find the first non-transparent background color
+  _findBackgroundColor(element) {
+    let el = element;
+    while (el && el !== document.documentElement) {
+      const bg = window.getComputedStyle(el).backgroundColor;
+      if (bg && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)") {
+        return this._parseRGB(bg);
+      }
+      el = el.parentElement;
+    }
+    // Default to white background
+    return [255, 255, 255];
   }
 
   // This is the value to reach the middle of a uni-glyph font character in order to

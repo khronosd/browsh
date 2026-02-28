@@ -41,12 +41,21 @@ export default class extends utils.mixins(CommonMixin, SerialiseMixin) {
 
   buildFormattedText(callback) {
     this._updateState();
-    this.graphics_builder.getOnOffScreenshots(() => {
+    if (this.config.browsh.use_experimental_text_visibility) {
+      // Two extra drawWindow() calls to detect text visibility by pixel-diffing
+      this.graphics_builder.getOnOffScreenshots(() => {
+        this.dimensions.update();
+        this._getTextNodes();
+        this._positionTextNodes();
+        callback();
+      });
+    } else {
+      // Skip the expensive on/off screenshots — use getComputedStyle for colors
       this.dimensions.update();
       this._getTextNodes();
       this._positionTextNodes();
       callback();
-    });
+    }
   }
 
   _updateState() {
